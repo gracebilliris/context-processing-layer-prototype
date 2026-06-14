@@ -1,0 +1,36 @@
+@prefix :     <https://example.org/cpl#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+
+# -----------------------------------------------------------------------------
+# CPL minimal ontology (paper §3.2)
+# Five core classes; every materialised assertion MUST carry a
+# prov:wasDerivedFrom link to an :EvidenceEvent retained in the context store.
+# -----------------------------------------------------------------------------
+
+: a owl:Ontology ;
+  rdfs:label "Context Processing Layer (CPL) core ontology" ;
+  rdfs:comment "Minimal ontology supporting governance reconstruction over multi-agent telemetry." .
+
+:Agent         a owl:Class ; rdfs:label "Agent" .
+:Tool          a owl:Class ; rdfs:label "Tool" .
+:AgentAction   a owl:Class ; rdfs:label "AgentAction" .
+:DataEntity    a owl:Class ; rdfs:label "DataEntity" .
+:EvidenceEvent a owl:Class ; rdfs:label "EvidenceEvent" ;
+  rdfs:comment "Raw interaction event retained in the append-only context store." .
+
+# --- Required attributes on :AgentAction --------------------------------------
+:performedBy   a owl:ObjectProperty ; rdfs:domain :AgentAction ; rdfs:range :Agent .
+:usedTool      a owl:ObjectProperty ; rdfs:domain :AgentAction ; rdfs:range :Tool .
+:accessedData  a owl:ObjectProperty ; rdfs:domain :AgentAction ; rdfs:range :DataEntity .
+:timestamp     a owl:DatatypeProperty ; rdfs:domain :AgentAction ; rdfs:range xsd:dateTime .
+
+# --- Provenance binding (the contract that makes CPL governance-queryable) ----
+:AgentAction rdfs:subClassOf [
+  a owl:Restriction ;
+  owl:onProperty prov:wasDerivedFrom ;
+  owl:someValuesFrom :EvidenceEvent
+] .
