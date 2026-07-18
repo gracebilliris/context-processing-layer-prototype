@@ -4,7 +4,7 @@
     {
       "parameters": {
         "topic": "context-processing-layer-trigger-topic",
-        "groupId": "n8n‑telemetry‑processor",
+        "groupId": "n8n\u2011telemetry\u2011processor",
         "options": {
           "fromBeginning": true,
           "jsonParseMessage": true,
@@ -30,9 +30,9 @@
     {
       "parameters": {
         "promptType": "define",
-        "text": "=The input: {{ $json.toJsonString() }}",
+        "text": "=Static ontology contract:\n{{ $json.ontology_contract }}\n\nEvidence identifier: {{ $json.evidence_id }}\nRaw telemetry input: {{ $json.raw_payload.toJsonString() }}",
         "options": {
-          "systemMessage": "You are the Telemetry Collector Agent in the Context Processing Layer.\n\nYour responsibility is to transform normalized telemetry into enriched contextual metadata.\nYou do not normalize raw telemetry — everything you consume is assumed to already meet schema standards.\n\nYour Goals:\n1. Extract and label key entities (agents, tasks, humans, models, systems).\n2. Identify attributes (status, timestamps, event type, metrics).\n3. Detect relationships such as `actor → action → target`, `parent → child span`, `task → agent`.\n4. Compute contextual values when possible:\n   • duration_ms = end_time - start_time\n   • severity derived from status, latency, or error codes\n   • event class (action, error, workflow, communication, coordination)\n\nOutput Required:\nReturn JSON structured as contextual telemetry:\n\n{\n  \"timestamp\": <ISO time>,\n  \"actor\": <entity>,\n  \"target\": <entity or null>,\n  \"job\": <string>,\n  \"severity\": <low|medium|high>,\n  \"duration_ms\": <number|null>,\n  \"relationships\": [...],\n  \"attributes\": {...},\n  \"context_summary\": <1-2 sentence interpretation>,\n  \"confidence\": <0.0 - 1.0>,\n  \"raw\": <full unchanged input>,\n  \"parseError\": false\n}\n\nIf any critical telemetry is missing, set:\n  parseError = true\n  all other values = null\n  raw = original input",
+          "systemMessage": "You are the Telemetry Collector Agent in the Context Processing Layer.\n\nTransform raw telemetry into JSON that conforms to the static CPL ontology contract supplied in the user message. Map only to the exact CPL classes and properties: cpl:Agent, cpl:Tool, cpl:AgentAction, cpl:DataEntity, cpl:EvidenceEvent, cpl:performedBy, cpl:usedTool, cpl:accessedData, cpl:timestamp, and prov:wasDerivedFrom. Do not generate, extend, or rewrite the ontology or mapping per event.\n\nRequired output JSON fields:\n{\n  \"timestamp\": <ISO time from the event, never invented>,\n  \"actor\": {\"type\": \"agent\", \"id\": <agent id>},\n  \"target\": <entity object or null>,\n  \"tool\": <tool id>,\n  \"accessed_data\": <data entity id>,\n  \"target_agent\": <delegated agent id or null>,\n  \"job\": <string|null>,\n  \"severity\": <low|medium|high|null>,\n  \"duration_ms\": <number|null>,\n  \"relationships\": [...],\n  \"attributes\": {\"evidence_id\": <evidence id>, ...},\n  \"context_summary\": <1-2 sentence interpretation>,\n  \"confidence\": <0.0 - 1.0 or null if unavailable>,\n  \"raw\": <full unchanged input>,\n  \"prov:wasDerivedFrom\": \"urn:cpl:evidence:<evidence_id>\",\n  \"parseError\": false\n}\n\nStrict failure rules: if JSON cannot be produced or a critical required field is missing, return valid JSON with parseError=true, error_message explaining the failure, raw as the unchanged input, and null for unknown fields. Never substitute the current time for a missing timestamp and never default confidence to 1.0.",
           "maxIterations": 1
         }
       },
@@ -91,7 +91,7 @@
       "parameters": {
         "operation": "insert",
         "collection": "enriched_telemetry_raw",
-        "fields": "timestamp, actor, target, job, severity, duration_ms, relationships, attributes, context_summary, confidence, raw, parseError",
+        "fields": "timestamp, actor, target, tool, accessed_data, target_agent, job, severity, duration_ms, relationships, attributes, context_summary, confidence, raw, raw_payload, evidence_id, ingest_timestamp, kafka_topic, kafka_partition, kafka_offset, prov:wasDerivedFrom, prov_wasDerivedFrom, parseError, error_message, validationPassed, shaclReport",
         "options": {}
       },
       "name": "Insert to Enriched Telemetry DB",
@@ -112,7 +112,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const rawInput = $input.item.json.output;\n\n// 1. Remove ```sparql fences\nlet sparql = rawInput.replace(/```sparql|```/gi, '').trim();\n\n// 2. Ensure required PREFIX declarations exist\nconst prefixes = `\nPREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>\nPREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n`;\n\nif (!sparql.toLowerCase().startsWith('prefix')) {\n  sparql = prefixes.trim() + '\\n\\n' + sparql;\n}\n\n// 3. Escape string literals with FULL xsd IRIs\nsparql = sparql.replace(\n  /\"([^\"]*?)\"\\^\\^<http:\\/\\/www\\.w3\\.org\\/2001\\/XMLSchema#(string|dateTime|float)>/g,\n  (_, value, type) => {\n    const escaped = value.replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"');\n    return `\"${escaped}\"^^xsd:${type}`;\n  }\n);\n\n// 4. (Optional but recommended) normalize boolean & integer literals\nsparql = sparql.replace(\n  /\"true\"\\^\\^xsd:boolean/g,\n  'true^^xsd:boolean'\n);\n\nsparql = sparql.replace(\n  /\"(\\d+)\"\\^\\^xsd:integer/g,\n  '$1^^xsd:integer'\n);\n\nreturn {\n  json: {\n    sparqlQuery: sparql\n  }\n};\n"
+        "jsCode": "const rawInput = $input.item.json.sparqlQuery || $input.item.json.output;\nif (!rawInput || typeof rawInput !== 'string') {\n  throw new Error('Expected a SPARQL query string');\n}\n\nlet sparql = rawInput.replace(/```sparql|```/gi, '').trim();\n\nconst requiredPrefixes = [\n  'PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>',\n  'PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>',\n  'PREFIX cpl: <https://example.org/cpl#>',\n  'PREFIX prov: <http://www.w3.org/ns/prov#>'\n];\n\nfor (const prefix of requiredPrefixes.reverse()) {\n  const name = prefix.match(/^PREFIX\\s+(\\w+):/i)[1].toLowerCase();\n  if (!new RegExp(`^PREFIX\\\\s+${name}:`, 'im').test(sparql)) {\n    sparql = `${prefix}\\n${sparql}`;\n  }\n}\n\nsparql = sparql.replace(\n  /\"([^\"]*?)\"\\^\\^<http:\\/\\/www\\.w3\\.org\\/2001\\/XMLSchema#(string|dateTime|float)>/g,\n  (_, value, type) => `\"${value.replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"')}\"^^xsd:${type}`\n);\n\nreturn { json: { sparqlQuery: sparql, telemetry: $input.item.json.telemetry || null } };\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -126,7 +126,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "// Get the raw output safely\nlet raw = item.json.output || null;\n\nlet input;\n\n// If raw exists, remove markdown wrappers and parse JSON\nif (raw) {\n  // Remove ```json ``` wrappers if present\n  raw = raw.replace(/^```json\\s*/i, '').replace(/```$/i, '');\n  try {\n    input = JSON.parse(raw);\n  } catch (error) {\n    input = {};\n  }\n} else {\n  input = {};\n}\n\n// 🔧 FIX: support string OR object actor/target\nconst actorId =\n  typeof input.actor === 'string'\n    ? input.actor\n    : input.actor?.id || null;\n\nconst targetId =\n  typeof input.target === 'string'\n    ? input.target\n    : input.target?.id || null;\n\n// Build the standardized JSON object\nitem.json = {\n  timestamp: input.timestamp\n    ? new Date(input.timestamp).toISOString()\n    : new Date().toISOString(),\n\n  actor: actorId\n    ? {\n        type:\n          typeof input.actor === 'object'\n            ? input.actor?.type || 'agent'\n            : 'agent',\n        id: actorId\n      }\n    : null,\n\n  target: targetId\n    ? {\n        type:\n          typeof input.target === 'object'\n            ? input.target?.type || 'agent'\n            : 'agent',\n        id: targetId\n      }\n    : null,\n\n  job: input.job || null,\n  severity: input.severity || null,\n  duration_ms: input.duration_ms != null ? Number(input.duration_ms) : null,\n\n  relationships: (input.relationships || []).map(r => {\n    if (typeof r === 'string') {\n      const [src, rel, tgt] = r.split(' → ');\n      return { source: src, type: rel, target: tgt };\n    }\n    return r;\n  }),\n\n  attributes: input.attributes || {},\n\n  context_summary: input.context_summary || null,\n  confidence: input.confidence != null ? Number(input.confidence) : 1.0,\n  raw: raw || null,\n  parseError: false\n};\n\nreturn item;\n"
+        "jsCode": "const current = $input.item.json || {};\nconst evidence = $node[\"Attach Static Ontology Contract\"]?.json || {};\nconst evidenceId = evidence.evidence_id || current.evidence_id || null;\nconst evidenceRef = evidenceId ? `urn:cpl:evidence:${evidenceId}` : null;\nconst originalPayload = evidence.raw_payload ?? current.raw_payload ?? null;\nconst ingestTimestamp = evidence.ingest_timestamp || null;\n\nfunction baseFailure(message, rawOutput) {\n  return {\n    json: {\n      timestamp: null,\n      actor: null,\n      target: null,\n      tool: null,\n      accessed_data: null,\n      target_agent: null,\n      job: null,\n      severity: null,\n      duration_ms: null,\n      relationships: [],\n      attributes: { evidence_id: evidenceId },\n      context_summary: null,\n      confidence: null,\n      raw: originalPayload,\n      raw_llm_output: rawOutput || null,\n      raw_payload: originalPayload,\n      evidence_id: evidenceId,\n      ingest_timestamp: ingestTimestamp,\n      kafka_topic: evidence.kafka_topic || null,\n      kafka_partition: evidence.kafka_partition ?? null,\n      kafka_offset: evidence.kafka_offset ?? null,\n      \"prov:wasDerivedFrom\": evidenceRef,\n      prov_wasDerivedFrom: evidenceRef,\n      parseError: true,\n      error_message: message,\n      failed_stage: 'json_parse'\n    }\n  };\n}\n\nlet raw = current.output;\nif (!raw || typeof raw !== 'string') {\n  return baseFailure('Telemetry Collector Agent did not return a JSON string', raw);\n}\n\nraw = raw.replace(/^```json\\s*/i, '').replace(/```$/i, '').trim();\n\nlet input;\ntry {\n  input = JSON.parse(raw);\n} catch (error) {\n  return baseFailure(`JSON.parse failed: ${error.message}`, raw);\n}\n\nif (!input.timestamp) {\n  return baseFailure('Missing required timestamp; strict mode does not substitute ingest time', raw);\n}\n\nlet timestamp;\ntry {\n  timestamp = new Date(input.timestamp).toISOString();\n  if (timestamp === 'Invalid Date') throw new Error('Invalid Date');\n} catch (error) {\n  return baseFailure(`Invalid timestamp: ${input.timestamp}`, raw);\n}\n\nconst actorId = typeof input.actor === 'string' ? input.actor : input.actor?.id || null;\nconst targetId = typeof input.target === 'string' ? input.target : input.target?.id || null;\nconst attributes = input.attributes && typeof input.attributes === 'object' && !Array.isArray(input.attributes) ? input.attributes : {};\nattributes.evidence_id = evidenceId;\n\nconst tool = input.tool || attributes.tool || attributes.used_tool || attributes.tool_id || null;\nconst accessedData = input.accessed_data || attributes.accessed_data || attributes.data_entity || attributes.data || null;\nconst targetAgent = input.target_agent || attributes.target_agent || (targetId && !accessedData ? targetId : null);\n\nreturn {\n  json: {\n    timestamp,\n    actor: actorId ? {\n      type: typeof input.actor === 'object' ? input.actor?.type || 'agent' : 'agent',\n      id: actorId\n    } : null,\n    target: targetId ? {\n      type: typeof input.target === 'object' ? input.target?.type || 'entity' : 'entity',\n      id: targetId\n    } : null,\n    tool,\n    accessed_data: accessedData,\n    target_agent: targetAgent,\n    job: input.job || null,\n    severity: input.severity || null,\n    duration_ms: input.duration_ms != null ? Number(input.duration_ms) : null,\n    relationships: (input.relationships || []).map(r => {\n      if (typeof r === 'string') {\n        const [source, type, target] = r.split(' \u2192 ');\n        return { source, type, target };\n      }\n      return r;\n    }),\n    attributes,\n    context_summary: input.context_summary || null,\n    confidence: input.confidence != null ? Number(input.confidence) : null,\n    raw: input.raw || originalPayload,\n    raw_payload: originalPayload,\n    evidence_id: evidenceId,\n    ingest_timestamp: ingestTimestamp,\n    kafka_topic: evidence.kafka_topic || null,\n    kafka_partition: evidence.kafka_partition ?? null,\n    kafka_offset: evidence.kafka_offset ?? null,\n    \"prov:wasDerivedFrom\": evidenceRef,\n    prov_wasDerivedFrom: evidenceRef,\n    parseError: input.parseError === true,\n    error_message: input.parseError === true ? (input.error_message || 'Extractor marked record as parseError') : null\n  }\n};\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -161,27 +161,8 @@
     },
     {
       "parameters": {
-        "options": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
-      "typeVersion": 1,
-      "position": [
-        88,
-        -80
-      ],
-      "id": "17247adf-6767-4584-afb7-fcad3f654c59",
-      "name": "Google Gemini Ontology Model",
-      "credentials": {
-        "googlePalmApi": {
-          "id": "kLt8bWK54hsaXd9c",
-          "name": "Google Gemini(PaLM) Api Ontology"
-        }
-      }
-    },
-    {
-      "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "function parseTelemetryOutput(input) {\n  if (!input || typeof input.output !== \"string\") {\n    throw new Error(\"Expected input.output to be a string\");\n  }\n\n  let str = input.output\n    .replace(/^```json\\s*/i, '')\n    .replace(/```$/i, '')\n    .trim();\n\n  // Normalize line breaks safely\n  str = str.replace(/\\r\\n/g, '\\n');\n\n  let obj;\n  try {\n    obj = JSON.parse(str);\n  } catch (err) {\n    throw new Error(\"Top-level JSON parse failed: \" + err.message);\n  }\n\n  function expand(o) {\n    if (typeof o === \"string\") {\n      const s = o.trim();\n      if (\n        (s.startsWith(\"{\") && s.endsWith(\"}\")) ||\n        (s.startsWith(\"[\") && s.endsWith(\"]\"))\n      ) {\n        try {\n          return expand(JSON.parse(s));\n        } catch {\n          return o;\n        }\n      }\n      return o;\n    }\n\n    if (Array.isArray(o)) return o.map(expand);\n\n    if (o && typeof o === \"object\") {\n      for (const k in o) {\n        o[k] = expand(o[k]);\n      }\n    }\n    return o;\n  }\n\n  return expand(obj);\n}\n\nreturn parseTelemetryOutput($json);\n"
+        "jsCode": "if ($json.ontology && $json.mapping && $json.telemetry) {\n  return $json;\n}\n\nif (!$json.output || typeof $json.output !== 'string') {\n  throw new Error('Expected static ontology mapping object or JSON output string');\n}\n\nconst str = $json.output.replace(/^```json\\s*/i, '').replace(/```$/i, '').trim();\nreturn JSON.parse(str);\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -194,27 +175,22 @@
     },
     {
       "parameters": {
-        "promptType": "define",
-        "text": "=Ontology: {{ $json.ontology.toJsonString() }}, Mappings: {{ $json.mapping.toJsonString() }}, Telemetry: {{ $json.telemetry.toJsonString() }}",
-        "options": {
-          "systemMessage": "You are the Telemetry Transformation & Graph Import Agent.\n\nYou are a deterministic RDF compiler.\n\nINPUTS:\n• A mapping contract\n• A raw telemetry payload\n\nCOMPILATION RULES:\n\n• TelemetryEvent instances describe WHEN and WHAT happened\n• Agents, Humans, Tasks are global entities\n• Relationship triples MUST be emitted from telemetry.relationships\n• attributes.* NEVER creates relationships\n• If a relationship exists in telemetry.relationships, it MUST be emitted\n• If a relationship does not exist in mapping, it MUST be ignored\n\nRDF RULES:\n\n• Emit only instance triples\n• Use fully expanded IRIs\n• Enforce datatypes exactly\n• Emit a single SPARQL INSERT DATA block\n• Never invent schema\n• Never infer meaning\n\nFAILURE RULES:\n\n• Missing required field → reject record\n• Invalid datatype → reject record\n• Unknown property → omit silently\n\nOUTPUT:\nA single SPARQL INSERT DATA statement."
-        }
+        "mode": "runOnceForEachItem",
+        "jsCode": "const telemetry = $json.telemetry || $json;\nconst CPL = 'https://example.org/cpl#';\n\nfunction esc(value) {\n  return String(value ?? '').replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"');\n}\n\nfunction local(value, fallback) {\n  return String(value || fallback || 'unknown').replace(/[^A-Za-z0-9_\\-]/g, '_');\n}\n\nconst evidenceId = telemetry.evidence_id;\nconst actionId = local(`action_${evidenceId}`);\nconst agentId = local(telemetry.actor?.id, 'agent_unknown');\nconst toolId = local(telemetry.tool, 'tool_unknown');\nconst dataId = local(telemetry.accessed_data, 'data_unknown');\nconst evidenceIri = `urn:cpl:evidence:${esc(evidenceId)}`;\nconst rawPayload = JSON.stringify(telemetry.raw_payload ?? telemetry.raw ?? {});\n\nconst sparqlQuery = `PREFIX cpl: <${CPL}>\nPREFIX prov: <http://www.w3.org/ns/prov#>\nPREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n\nINSERT DATA {\n  GRAPH <urn:cpl:assertions> {\n    cpl:${actionId} a cpl:AgentAction ;\n      cpl:performedBy cpl:${agentId} ;\n      cpl:usedTool cpl:${toolId} ;\n      cpl:accessedData cpl:${dataId} ;\n      cpl:timestamp \"${esc(telemetry.timestamp)}\"^^xsd:dateTime ;\n      prov:wasDerivedFrom <${evidenceIri}> .\n\n    cpl:${agentId} a cpl:Agent ; cpl:agentId \"${esc(telemetry.actor?.id)}\" .\n    cpl:${toolId} a cpl:Tool ; cpl:toolId \"${esc(telemetry.tool)}\" .\n    cpl:${dataId} a cpl:DataEntity ; cpl:dataId \"${esc(telemetry.accessed_data)}\" .\n    <${evidenceIri}> a cpl:EvidenceEvent ;\n      cpl:evidenceId \"${esc(evidenceId)}\" ;\n      cpl:ingestTimestamp \"${esc(telemetry.ingest_timestamp)}\"^^xsd:dateTime ;\n      cpl:rawPayload \"${esc(rawPayload)}\" .\n  }\n}`;\n\nreturn { json: { sparqlQuery, telemetry } };\n"
       },
-      "type": "@n8n/n8n-nodes-langchain.agent",
-      "typeVersion": 3,
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         816,
         -304
       ],
       "id": "737c7597-cf6a-4be8-86b1-329ec31e6350",
-      "name": "Telemetry Transformation Agent",
-      "alwaysOutputData": false,
-      "retryOnFail": false
+      "name": "Telemetry Transformation Agent"
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "http://host.docker.internal:3030/ontology/update",
+        "url": "http://fuseki:3030/cpl/update",
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/sparql-update",
@@ -228,13 +204,13 @@
         -400
       ],
       "id": "6fa8d477-15bd-4cdc-b3da-77b8305a035d",
-      "name": "Graph Importer to GraphDB"
+      "name": "Graph Importer to Fuseki"
     },
     {
       "parameters": {
         "operation": "insert",
         "collection": "telemetry_transformation",
-        "fields": "={{ $json.sparqlQuery }}",
+        "fields": "sparqlQuery, telemetry",
         "options": {}
       },
       "name": "Insert to Telemetry Transformation DB",
@@ -254,24 +230,17 @@
     },
     {
       "parameters": {
-        "promptType": "define",
-        "text": "=Input telemetry metadata:\n{{ $json.toJsonString() }}",
-        "options": {
-          "systemMessage": "You are the Ontology & Mapping Authority Agent.\n\nYou are the single semantic source of truth for the telemetry knowledge graph.\n\nYour responsibility is to define:\n1) A minimal, fact-oriented OWL ontology\n2) A canonical mapping contract that instantiates telemetry into that ontology\n\nSEMANTIC RULES (ABSOLUTE):\n\n• Ontology models FACTS, not telemetry mechanics\n• Agents perform tasks (never inverted)\n• Humans are associated with tasks (not events)\n• TelemetryEvent describes occurrence, not ownership\n• Relationships are first-class semantic edges\n• No ontology element exists unless it appears in mapping\n• No mapping element exists unless defined in ontology\n\nONTOLOGY RULES:\n\nYou MUST:\n• Emit OWL ontology in JSON-LD\n• Declare only owl:Class, owl:ObjectProperty, owl:DatatypeProperty\n• Use correct domain/range semantics\n• Never emit individuals\n\nYou MUST NOT:\n• Reify relationships as nodes\n• Encode process flow\n• Encode visualization concerns\n\nMAPPING RULES:\n\n• Mapping MUST derive strictly from ontology\n• Relationships MUST come from telemetry.relationships when present\n• attributes.* is for scalar facts only\n• eventClass MUST be minimal (TelemetryEvent or subclass)\n• Nested entity creation ONLY when semantically required\n\nOUTPUT FORMAT (ABSOLUTE):\n\n{\n  \"ontology\": { … },\n  \"mapping\": { … },\n  \"telemetry\": { … }\n}\n\nNo commentary.\nNo markdown.\nNo deviation.",
-          "maxIterations": 1
-        }
+        "mode": "runOnceForEachItem",
+        "jsCode": "const telemetry = $input.item.json;\n\nreturn {\n  json: {\n    ontology: {\n      source: 'ontology/cpl-ontology.ttl',\n      classes: ['cpl:Agent', 'cpl:Tool', 'cpl:AgentAction', 'cpl:DataEntity', 'cpl:EvidenceEvent'],\n      properties: ['cpl:performedBy', 'cpl:usedTool', 'cpl:accessedData', 'cpl:timestamp', 'prov:wasDerivedFrom']\n    },\n    mapping: {\n      action: 'cpl:AgentAction',\n      actor: 'cpl:performedBy',\n      tool: 'cpl:usedTool',\n      accessed_data: 'cpl:accessedData',\n      timestamp: 'cpl:timestamp',\n      evidence: 'prov:wasDerivedFrom'\n    },\n    telemetry\n  }\n};\n"
       },
-      "type": "@n8n/n8n-nodes-langchain.agent",
-      "typeVersion": 3,
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         16,
         -304
       ],
       "id": "22d29507-ff15-4772-8edb-0bafe1a69af8",
-      "name": "Ontology & Mapping Authority Agent",
-      "alwaysOutputData": false,
-      "retryOnFail": false,
-      "maxTries": null
+      "name": "Attach Static Ontology Mapping"
     },
     {
       "parameters": {
@@ -339,20 +308,115 @@
     },
     {
       "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function uuidv4() {\n  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {\n    return globalThis.crypto.randomUUID();\n  }\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\n\nconst event = $input.item.json || {};\nconst rawPayload = event.message && typeof event.message === 'object' ? event.message : event;\nconst evidenceId = uuidv4();\nconst ingestTimestamp = new Date().toISOString();\n\nreturn {\n  json: {\n    evidence_id: evidenceId,\n    raw_payload: rawPayload,\n    ingest_timestamp: ingestTimestamp,\n    kafka_topic: event.topic || event.kafka_topic || event.topicName || 'context-processing-layer-trigger-topic',\n    kafka_partition: event.partition ?? event.kafka_partition ?? null,\n    kafka_offset: event.offset ?? event.kafka_offset ?? null\n  }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -896,
+        -304
+      ],
+      "id": "2b19e1d8-7f65-4b82-99de-7a9c3d25a101",
+      "name": "Prepare Raw Evidence"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "telemetry_raw",
+        "fields": "evidence_id, raw_payload, ingest_timestamp, kafka_topic, kafka_partition, kafka_offset",
         "options": {}
       },
-      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
-      "typeVersion": 1,
+      "name": "Insert Raw Evidence to MongoDB",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1.2,
       "position": [
-        888,
-        -80
+        -752,
+        -304
       ],
-      "id": "908b7575-2d23-47e8-8310-634a460177f6",
-      "name": "Google Gemini Transformation Model",
+      "id": "354553ea-bc86-4c3f-9d30-5d22bc712102",
       "credentials": {
-        "googlePalmApi": {
-          "id": "hIAX2nYQz6mAucbu",
-          "name": "Google Gemini(PaLM) Api Telemetry Transformation Agent"
+        "mongoDb": {
+          "id": "Z7jxTD1dalW8RTbt",
+          "name": "telemetry_db mongodb"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const prepared = $node[\"Prepare Raw Evidence\"]?.json || $input.item.json || {};\nconst item = { ...prepared };\n\nitem.ontology_contract = `Static CPL ontology contract from ontology/cpl-ontology.ttl:\nClasses: cpl:Agent, cpl:Tool, cpl:AgentAction, cpl:DataEntity, cpl:EvidenceEvent.\nRequired AgentAction properties: cpl:performedBy (Agent), cpl:usedTool (Tool), cpl:accessedData (DataEntity), cpl:timestamp (xsd:dateTime), prov:wasDerivedFrom (EvidenceEvent).\nRequired entity identifiers: cpl:agentId for Agent, cpl:toolId for Tool, cpl:dataId for DataEntity, cpl:evidenceId plus cpl:ingestTimestamp for EvidenceEvent.\nAllowed top-level JSON fields: timestamp, actor, target, tool, accessed_data, target_agent, job, severity, duration_ms, relationships, attributes, context_summary, confidence, raw, evidence_id, prov:wasDerivedFrom, parseError.\nDo not create, alter, or regenerate ontology classes or properties at runtime.`;\n\nreturn item;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -608,
+        -304
+      ],
+      "id": "7c1938c2-e086-4fa4-a8f5-bebcecf6a103",
+      "name": "Attach Static Ontology Contract"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item.json;\nconst violations = [];\n\nfunction requireValue(path, value, shape) {\n  if (value === null || value === undefined || value === '') {\n    violations.push({ shape, path, message: `${path} is required by ontology/cpl-shapes.ttl` });\n  }\n}\n\nif (item.parseError === true) {\n  violations.push({ shape: 'cpl:StrictParseShape', path: 'parseError', message: item.error_message || 'Record failed strict parsing' });\n}\n\nrequireValue('prov:wasDerivedFrom', item['prov:wasDerivedFrom'], 'cpl:AgentActionShape');\nrequireValue('timestamp', item.timestamp, 'cpl:AgentActionShape');\nrequireValue('actor.id', item.actor && item.actor.id, 'cpl:AgentShape');\nrequireValue('tool', item.tool, 'cpl:ToolShape');\nrequireValue('accessed_data', item.accessed_data, 'cpl:DataEntityShape');\nrequireValue('evidence_id', item.evidence_id, 'cpl:EvidenceEventShape');\nrequireValue('raw_payload', item.raw_payload, 'cpl:EvidenceEventShape');\nrequireValue('ingest_timestamp', item.ingest_timestamp, 'cpl:EvidenceEventShape');\n\nitem.validationPassed = violations.length === 0;\nitem.shaclReport = {\n  conforms: item.validationPassed,\n  shapesGraph: 'ontology/cpl-shapes.ttl',\n  violations\n};\nitem.failed_stage = item.validationPassed ? null : (item.parseError ? item.failed_stage || 'json_parse' : 'shacl_validation');\n\nreturn item;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -304,
+        -304
+      ],
+      "id": "6ad87d0d-c047-43d3-b8d4-9d50ff5b1104",
+      "name": "Validate Assertion with SHACL Contract"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all().filter(item => item.json.validationPassed === true);\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        -400
+      ],
+      "id": "a50c6c0d-0370-4a5e-80db-e945b23c7105",
+      "name": "Keep Valid Assertions"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all().filter(item => item.json.validationPassed !== true);\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        -208
+      ],
+      "id": "a9b2831a-7454-44a3-96ae-bd95572c7106",
+      "name": "Keep Failed Assertions"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "failed_assertions",
+        "fields": "timestamp, actor, target, tool, accessed_data, target_agent, job, severity, duration_ms, relationships, attributes, context_summary, confidence, raw, raw_llm_output, raw_payload, evidence_id, ingest_timestamp, kafka_topic, kafka_partition, kafka_offset, prov:wasDerivedFrom, prov_wasDerivedFrom, parseError, error_message, validationPassed, shaclReport, failed_stage",
+        "options": {}
+      },
+      "name": "Insert Failed Assertions to MongoDB",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1.2,
+      "position": [
+        144,
+        -208
+      ],
+      "id": "1672a11e-21aa-4b5b-aa16-a360e4ce1107",
+      "credentials": {
+        "mongoDb": {
+          "id": "Z7jxTD1dalW8RTbt",
+          "name": "telemetry_db mongodb"
         }
       }
     }
@@ -363,7 +427,7 @@
       "main": [
         [
           {
-            "node": "Telemetry Collector Agent",
+            "node": "Prepare Raw Evidence",
             "type": "main",
             "index": 0
           }
@@ -407,7 +471,7 @@
       "main": [
         [
           {
-            "node": "Ontology & Mapping Authority Agent",
+            "node": "Attach Static Ontology Mapping",
             "type": "main",
             "index": 0
           }
@@ -418,7 +482,7 @@
       "main": [
         [
           {
-            "node": "Graph Importer to GraphDB",
+            "node": "Graph Importer to Fuseki",
             "type": "main",
             "index": 0
           },
@@ -434,19 +498,8 @@
       "main": [
         [
           {
-            "node": "Insert to Enriched Telemetry DB",
+            "node": "Validate Assertion with SHACL Contract",
             "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Google Gemini Ontology Model": {
-      "ai_languageModel": [
-        [
-          {
-            "node": "Ontology & Mapping Authority Agent",
-            "type": "ai_languageModel",
             "index": 0
           }
         ]
@@ -485,27 +538,11 @@
         ]
       ]
     },
-    "Graph Importer to GraphDB": {
-      "main": [
-        []
-      ]
-    },
     "Insert to Telemetry Transformation DB": {
       "main": [
         [
           {
             "node": "(1) Capture Metrics",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Ontology & Mapping Authority Agent": {
-      "main": [
-        [
-          {
-            "node": "Extract Data for MongoDB Raw Ontology Collection",
             "type": "main",
             "index": 0
           }
@@ -539,12 +576,93 @@
         []
       ]
     },
-    "Google Gemini Transformation Model": {
-      "ai_languageModel": [
+    "Graph Importer to Fuseki": {
+      "main": [
+        []
+      ]
+    },
+    "Prepare Raw Evidence": {
+      "main": [
         [
           {
-            "node": "Telemetry Transformation Agent",
-            "type": "ai_languageModel",
+            "node": "Insert Raw Evidence to MongoDB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Raw Evidence to MongoDB": {
+      "main": [
+        [
+          {
+            "node": "Attach Static Ontology Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Static Ontology Contract": {
+      "main": [
+        [
+          {
+            "node": "Telemetry Collector Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Assertion with SHACL Contract": {
+      "main": [
+        [
+          {
+            "node": "Keep Valid Assertions",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Keep Failed Assertions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep Valid Assertions": {
+      "main": [
+        [
+          {
+            "node": "Insert to Enriched Telemetry DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep Failed Assertions": {
+      "main": [
+        [
+          {
+            "node": "Insert Failed Assertions to MongoDB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Failed Assertions to MongoDB": {
+      "main": [
+        []
+      ]
+    },
+    "Attach Static Ontology Mapping": {
+      "main": [
+        [
+          {
+            "node": "Extract Data for MongoDB Raw Ontology Collection",
+            "type": "main",
             "index": 0
           }
         ]

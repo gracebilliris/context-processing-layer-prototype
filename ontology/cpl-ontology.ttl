@@ -4,6 +4,7 @@
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
 @prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix cpl:  <https://example.org/cpl#> .
 
 # -----------------------------------------------------------------------------
 # CPL minimal ontology (paper §3.2)
@@ -21,6 +22,14 @@
 :DataEntity    a owl:Class ; rdfs:label "DataEntity" .
 :EvidenceEvent a owl:Class ; rdfs:label "EvidenceEvent" ;
   rdfs:comment "Raw interaction event retained in the append-only context store." .
+
+# --- Required identifiers on first-class entities -----------------------------
+:agentId         a owl:DatatypeProperty ; rdfs:domain :Agent ; rdfs:range xsd:string .
+:toolId          a owl:DatatypeProperty ; rdfs:domain :Tool ; rdfs:range xsd:string .
+:dataId          a owl:DatatypeProperty ; rdfs:domain :DataEntity ; rdfs:range xsd:string .
+:evidenceId      a owl:DatatypeProperty ; rdfs:domain :EvidenceEvent ; rdfs:range xsd:string .
+:rawPayload      a owl:DatatypeProperty ; rdfs:domain :EvidenceEvent ; rdfs:range xsd:string .
+:ingestTimestamp a owl:DatatypeProperty ; rdfs:domain :EvidenceEvent ; rdfs:range xsd:dateTime .
 
 # --- Required attributes on :AgentAction --------------------------------------
 :performedBy   a owl:ObjectProperty ; rdfs:domain :AgentAction ; rdfs:range :Agent .

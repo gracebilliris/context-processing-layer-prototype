@@ -1,0 +1,79 @@
+@prefix cpl:  <https://example.org/cpl#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+cpl:AgentShape
+  a sh:NodeShape ;
+  sh:targetClass cpl:Agent ;
+  sh:property [
+    sh:path cpl:agentId ;
+    sh:minCount 1 ;
+    sh:datatype xsd:string ;
+  ] .
+
+cpl:ToolShape
+  a sh:NodeShape ;
+  sh:targetClass cpl:Tool ;
+  sh:property [
+    sh:path cpl:toolId ;
+    sh:minCount 1 ;
+    sh:datatype xsd:string ;
+  ] .
+
+cpl:DataEntityShape
+  a sh:NodeShape ;
+  sh:targetClass cpl:DataEntity ;
+  sh:property [
+    sh:path cpl:dataId ;
+    sh:minCount 1 ;
+    sh:datatype xsd:string ;
+  ] .
+
+cpl:EvidenceEventShape
+  a sh:NodeShape ;
+  sh:targetClass cpl:EvidenceEvent ;
+  sh:property [
+    sh:path cpl:evidenceId ;
+    sh:minCount 1 ;
+    sh:datatype xsd:string ;
+  ] ;
+  sh:property [
+    sh:path cpl:rawPayload ;
+    sh:minCount 1 ;
+    sh:datatype xsd:string ;
+  ] ;
+  sh:property [
+    sh:path cpl:ingestTimestamp ;
+    sh:minCount 1 ;
+    sh:datatype xsd:dateTime ;
+  ] .
+
+cpl:AgentActionShape
+  a sh:NodeShape ;
+  sh:targetClass cpl:AgentAction ;
+  sh:property [
+    sh:path cpl:performedBy ;
+    sh:minCount 1 ;
+    sh:class cpl:Agent ;
+  ] ;
+  sh:property [
+    sh:path cpl:usedTool ;
+    sh:minCount 1 ;
+    sh:class cpl:Tool ;
+  ] ;
+  sh:property [
+    sh:path cpl:accessedData ;
+    sh:minCount 1 ;
+    sh:class cpl:DataEntity ;
+  ] ;
+  sh:property [
+    sh:path cpl:timestamp ;
+    sh:minCount 1 ;
+    sh:datatype xsd:dateTime ;
+  ] ;
+  sh:property [
+    sh:path prov:wasDerivedFrom ;
+    sh:minCount 1 ;
+    sh:class cpl:EvidenceEvent ;
+  ] .

@@ -62,24 +62,26 @@ the raw bytes that justify every claim.
                                     └────────┬───────────────┬─────────┘
                                              ▼               ▼
                                    ┌──────────────┐  ┌────────────────┐
-                                   │ Context      │  │ Knowledge      │
-                                   │ store        │  │ graph          │
-                                   │ (MongoDB,    │  │ (MongoDB,      │
-                                   │  append-only)│  │  triple-like)  │
+                                   │ Context +    │  │ RDF assertion  │
+                                   │ materialised │  │ store          │
+                                   │ documents    │  │ (Fuseki /cpl)  │
+                                   │ (MongoDB)    │  │                │
                                    └──────────────┘  └────────────────┘
 ```
 
-In this prototype both stores are MongoDB collections inside the same
-instance:
+This prototype uses MongoDB for evidence retention and document-shaped
+materialisations, plus Apache Jena Fuseki for RDF assertions:
 
-| Logical role     | MongoDB collection         | Notes                                   |
-| ---------------- | -------------------------- | --------------------------------------- |
-| Context store    | `telemetry_raw`            | Append-only; every event keyed by `evidence_id` |
-| Knowledge graph  | `enriched_telemetry_raw`   | Conformant assertions with `prov_wasDerivedFrom` |
+| Logical role | Store | Notes |
+| ------------ | ----- | ----- |
+| Context store | MongoDB `telemetry_raw` | Append-only; every event keyed by UUID v4 `evidence_id` |
+| Materialised documents | MongoDB `enriched_telemetry_raw` | SHACL-validated assertions with top-level `prov:wasDerivedFrom` |
+| Validation failures | MongoDB `failed_assertions` | Strict parse and SHACL violation reports |
+| RDF graph | Fuseki dataset `cpl` | SPARQL update endpoint `http://fuseki:3030/cpl/update`; query endpoint `/cpl/query` |
 
 The n8n workflow (`cpl-prototype.json`) implements the four pipeline stages
-using a Kafka trigger, a Google Gemini-backed LangChain agent, and two
-MongoDB nodes.
+using a Kafka trigger, a Google Gemini-backed LangChain agent, MongoDB
+branches, and a Fuseki SPARQL update branch.
 
 ## Repository layout
 
@@ -88,11 +90,12 @@ MongoDB nodes.
 ├── README.md                  ← you are here
 ├── REPLICATION.md             ← step-by-step paper reproduction guide
 ├── LICENSE
-├── docker-compose.yml         ← Kafka + Zookeeper + MongoDB + n8n
+├── docker-compose.yml         ← Kafka + Zookeeper + MongoDB + Fuseki + n8n
 ├── .env.example               ← environment variables (copy to .env)
 ├── cpl-prototype.json         ← n8n workflow export (the pipeline)
 ├── ontology/
-│   └── cpl-ontology.ttl       ← Turtle file of the 5-class CPL ontology
+│   ├── cpl-ontology.ttl       ← Turtle file of the 5-class CPL ontology
+│   └── cpl-shapes.ttl         ← SHACL runtime contract
 ├── data/
 │   ├── generate_synthetic_telemetry.py   ← reproduces the 60-event corpus
 │   └── README.md
@@ -149,9 +152,10 @@ URLs. Expect the first start to take ~60s while images are pulled.
 1. Open <http://localhost:5678> and create the local n8n owner account.
 2. Go to **Workflows → Import from File** and select `cpl-prototype.json`.
 3. Create the three credentials referenced by the workflow:
-   - **Kafka** → broker `kafka:9092` (the in-network hostname).
+   - **Kafka** → broker `kafka:29092` (the in-network hostname; use `localhost:9092` from the host).
    - **MongoDB** → connection string `mongodb://cpl:cpl@mongo:27017/cpl?authSource=admin`.
    - **Google Gemini (PaLM) API** → paste your API key.
+   Fuseki is addressed directly by the workflow at `http://fuseki:3030/cpl/update`.
 4. Open the imported workflow and click **Activate** (top right).
 
 Detailed screenshots and field-by-field instructions are in
@@ -165,8 +169,8 @@ python data/generate_synthetic_telemetry.py --scenarios all --out data/events.js
 python scripts/publish_to_kafka.py --input data/events.jsonl --topic context-processing-layer-trigger-topic
 ```
 
-You should see the n8n workflow execute once per event and writes appearing
-in MongoDB.
+You should see the n8n workflow execute once per event, raw evidence appearing
+in MongoDB, and RDF assertions posted to Fuseki.
 
 ### 5. Inspect the result
 
@@ -174,6 +178,8 @@ in MongoDB.
 docker compose exec mongo mongosh -u cpl -p cpl --authenticationDatabase admin cpl \
   --eval 'db.enriched_telemetry_raw.countDocuments()'
 ```
+
+Fuseki is exposed at <http://localhost:3030/> with dataset `cpl`.
 
 Then try the [sample governance queries](#sample-governance-queries) below.
 
@@ -207,7 +213,7 @@ and runnable against the MongoDB knowledge graph:
 | ---- | ------------------- |
 | `q1_who_accessed_pii.js` | *Which agents accessed the student profile?* |
 | `q2_tool_chain_for_action.js` | *Which tool invocation transmitted the data externally, and via which delegation chain?* |
-| `q3_provenance_resolution.js` | *For every assertion, does the `prov_wasDerivedFrom` link resolve to a retained event?* (semantic-success metric) |
+| `q3_provenance_resolution.js` | *For every assertion, does the `prov:wasDerivedFrom` link resolve to a retained event?* (semantic-success metric) |
 
 Run any of them with:
 
@@ -226,6 +232,8 @@ All runtime configuration is in `.env` (copied from `.env.example`):
 | `KAFKA_TOPIC` | `context-processing-layer-trigger-topic` | Topic CPL listens on |
 | `MONGO_INITDB_ROOT_USERNAME` | `cpl` | MongoDB root user |
 | `MONGO_INITDB_ROOT_PASSWORD` | `cpl` | MongoDB root password (change for non-local use) |
+| `FUSEKI_HOST_PORT` | `3030` | Host port for Apache Jena Fuseki |
+| `FUSEKI_ADMIN_PASSWORD` | `cpl` | Local Fuseki admin password |
 | `N8N_PORT` | `5678` | Host port for the n8n UI |
 | `N8N_BASIC_AUTH_USER` | `admin` | Optional basic auth for n8n |
 | `N8N_BASIC_AUTH_PASSWORD` | `changeme` | Optional basic auth for n8n |
@@ -236,7 +244,7 @@ All runtime configuration is in `.env` (copied from `.env.example`):
 Confirm the topic exists and the workflow is active:
 
 ```bash
-docker compose exec kafka kafka-topics.sh --bootstrap-server kafka:9092 --list
+docker compose exec kafka kafka-topics.sh --bootstrap-server kafka:29092 --list
 ```
 
 If empty, the publisher will auto-create the topic on first publish, but the

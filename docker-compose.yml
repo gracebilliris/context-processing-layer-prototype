@@ -1,4 +1,4 @@
-# Brings up the full CPL stack: Zookeeper + Kafka + MongoDB + n8n.
+# Brings up the full CPL stack: Zookeeper + Kafka + MongoDB + Fuseki + n8n.
 # Used by the quickstart and replication guides. Not intended for production.
 
 services:
@@ -7,6 +7,7 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok,srvr,stat"
     healthcheck:
       test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
       interval: 5s
@@ -51,6 +52,16 @@ services:
       timeout: 5s
       retries: 20
 
+  fuseki:
+    image: stain/jena-fuseki:latest
+    ports:
+      - "${FUSEKI_HOST_PORT:-3030}:3030"
+    environment:
+      ADMIN_PASSWORD: ${FUSEKI_ADMIN_PASSWORD:-cpl}
+      FUSEKI_DATASET_1: cpl
+    volumes:
+      - fuseki-data:/fuseki
+
   n8n:
     image: n8nio/n8n:latest
     depends_on:
@@ -58,6 +69,8 @@ services:
         condition: service_healthy
       mongo:
         condition: service_healthy
+      fuseki:
+        condition: service_started
     ports:
       - "${N8N_PORT:-5678}:5678"
     environment:
@@ -75,3 +88,4 @@ services:
 
 volumes:
   mongo-data: {}
+  fuseki-data: {}

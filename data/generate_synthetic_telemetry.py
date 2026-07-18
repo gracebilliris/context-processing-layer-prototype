@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Keep the noisy/heartbeat event ratio constant across scenarios so agent count
+# is not confounded with workload cleanliness in the semantic-success evaluation.
 """Generate synthetic multi-agent telemetry for the CPL feasibility evaluation.
 
 Reproduces the corpus described in the paper:
@@ -16,13 +18,13 @@ import argparse
 import json
 import random
 import sys
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
 SCENARIOS = ("single", "two", "three")
+DEFAULT_NOISE_RATIO = 0.25
 
 TOOLS = [
     "student_record_api",
@@ -52,27 +54,27 @@ class Scenario:
     sequences: int = 60
 
 
-def build_scenarios(per_scenario: int) -> list[Scenario]:
+def build_scenarios(per_scenario: int, noise_ratio: float = DEFAULT_NOISE_RATIO) -> list[Scenario]:
     return [
         Scenario(
             name="single",
             agents=["retrieval_agent"],
             events_per_sequence=4,
-            noisy_ratio=0.45,
+            noisy_ratio=noise_ratio,
             sequences=per_scenario,
         ),
         Scenario(
             name="two",
             agents=["retrieval_agent", "financial_agent"],
             events_per_sequence=6,
-            noisy_ratio=0.25,
+            noisy_ratio=noise_ratio,
             sequences=per_scenario,
         ),
         Scenario(
             name="three",
             agents=["retrieval_agent", "financial_agent", "portal_agent"],
             events_per_sequence=8,
-            noisy_ratio=0.15,
+            noisy_ratio=noise_ratio,
             sequences=per_scenario,
         ),
     ]
@@ -80,6 +82,10 @@ def build_scenarios(per_scenario: int) -> list[Scenario]:
 
 def _iso(ts: datetime) -> str:
     return ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _event_id(rng: random.Random) -> str:
+    return f"evt:{rng.getrandbits(32):08x}"
 
 
 def _maybe_nested(rng: random.Random, payload: dict) -> dict:
@@ -92,7 +98,7 @@ def _maybe_nested(rng: random.Random, payload: dict) -> dict:
 def _make_noisy_event(rng: random.Random, scenario: Scenario, ts: datetime, run: int) -> dict:
     kind = rng.choice(NOISY_HEARTBEAT_KINDS)
     return {
-        "evidence_id": f"evt:{uuid.uuid4().hex[:8]}",
+        "evidence_id": _event_id(rng),
         "scenario": scenario.name,
         "run": run,
         "kind": kind,
@@ -118,7 +124,7 @@ def _make_action_event(
     tool = rng.choice(TOOLS)
     data_entity = rng.choice(DATA_ENTITIES)
     payload = {
-        "evidence_id": f"evt:{uuid.uuid4().hex[:8]}",
+        "evidence_id": _event_id(rng),
         "scenario": scenario.name,
         "run": run,
         "kind": "agent_action",
@@ -159,6 +165,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--runs", type=int, default=3, help="Independent runs per scenario.")
     p.add_argument("--per-scenario", type=int, default=60,
                    help="Interaction-event sequences per scenario per run.")
+    p.add_argument("--noise-ratio", type=float, default=DEFAULT_NOISE_RATIO,
+                   help="Share of heartbeat/introspective events in every scenario (default: 0.25).")
     p.add_argument("--seed", type=int, default=20260613, help="RNG seed for determinism.")
     p.add_argument("--out", type=Path, default=None, help="Output .jsonl path (default: stdout).")
     return p.parse_args(argv)
@@ -171,9 +179,12 @@ def main(argv: list[str]) -> int:
     if unknown:
         print(f"Unknown scenario(s): {unknown}", file=sys.stderr)
         return 2
+    if not 0.0 <= args.noise_ratio <= 1.0:
+        print("--noise-ratio must be between 0.0 and 1.0", file=sys.stderr)
+        return 2
 
     rng = random.Random(args.seed)
-    scenarios = [s for s in build_scenarios(args.per_scenario) if s.name in selected]
+    scenarios = [s for s in build_scenarios(args.per_scenario, args.noise_ratio) if s.name in selected]
 
     sink = args.out.open("w") if args.out else sys.stdout
     try:
