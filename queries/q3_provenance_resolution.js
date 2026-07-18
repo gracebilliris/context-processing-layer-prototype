@@ -7,9 +7,18 @@ const db = db.getSiblingDB("cpl");
 
 const results = db.enriched_telemetry_raw.aggregate([
   { $match: { parseError: { $ne: true } } },
+  { $addFields: {
+      evidence_lookup_id: {
+        $replaceOne: {
+          input: "$prov:wasDerivedFrom",
+          find: "urn:cpl:evidence:",
+          replacement: ""
+        }
+      }
+  } },
   { $lookup: {
       from: "telemetry_raw",
-      localField: "prov_wasDerivedFrom",
+      localField: "evidence_lookup_id",
       foreignField: "evidence_id",
       as: "evidence"
   } },

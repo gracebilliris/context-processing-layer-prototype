@@ -10,9 +10,12 @@ imported workflow.
 | Field          | Value                       |
 | -------------- | --------------------------- |
 | Credential name| `Local`                     |
-| Bootstrap servers | `kafka:9092`             |
+| Bootstrap servers | `kafka:29092`            |
 | SSL            | off                         |
 | Authentication | none                        |
+
+> Use `kafka:29092` when connecting from within the docker network (e.g. n8n
+> container); use `localhost:9092` from the host.
 
 ## 2. MongoDB
 

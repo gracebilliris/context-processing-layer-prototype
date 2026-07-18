@@ -15,7 +15,7 @@ printjson(
         tool: "$tool",
         ts: "$timestamp",
         evidence_id: "$evidence_id",
-        prov_wasDerivedFrom: "$prov_wasDerivedFrom"
+        "prov:wasDerivedFrom": "$prov:wasDerivedFrom"
     } },
     { $sort: { ts: 1 } }
   ]).toArray()

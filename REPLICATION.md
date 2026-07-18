@@ -31,6 +31,9 @@ exactly. The credential **names** (not just types) must match the names
 embedded in `cpl-prototype.json`, otherwise the imported workflow will
 reference unresolved credential IDs.
 
+Use `kafka:29092` when connecting from within the docker network (e.g. n8n
+container); use `localhost:9092` from the host.
+
 Activate the workflow before publishing any events.
 
 ## 3. Regenerate the synthetic corpus
@@ -40,14 +43,19 @@ python -m pip install -r data/requirements.txt
 python data/generate_synthetic_telemetry.py \
     --scenarios single,two,three \
     --runs 3 \
+    --noise-ratio 0.25 \
     --seed 20260613 \
     --out data/events.jsonl
+wc -l data/events.jsonl
 ```
 
-This produces 60 events per scenario × 3 scenarios × 3 runs = **540 events**
-in `data/events.jsonl`. The `--seed` flag makes the corpus deterministic.
-The paper's headline numbers are reported per scenario, averaged across the
-three runs.
+This produces **3,240 events** in `data/events.jsonl` with the current
+defaults: `single` = 60 sequences × 4 events × 3 runs = **720 events**,
+`two` = 60 × 6 × 3 = **1,080 events**, and `three` = 60 × 8 × 3 =
+**1,440 events**. The exact reproduction command above should therefore print
+`3240` from `wc -l`. The `--seed` flag makes the corpus deterministic, and
+`--noise-ratio 0.25` applies the same heartbeat/introspective-event ratio to
+all three scenarios.
 
 ## 4. Replay through the pipeline with instrumentation
 
@@ -70,9 +78,9 @@ The output `report.json` contains:
 ```jsonc
 {
   "scenarios": {
-    "single":  { "events": 180, "throughput_per_min": 10, "avg_latency_s": 398, "semantic_success_pct": 65.0 },
-    "two":     { "events": 180, "throughput_per_min": 15, "avg_latency_s": 798, "semantic_success_pct": 70.7 },
-    "three":   { "events": 180, "throughput_per_min": 18, "avg_latency_s": 951, "semantic_success_pct": 82.0 }
+    "single":  { "events": 720, "processed": 720, "throughput_per_min": 10, "elapsed_wall_clock_s": 4320, "avg_latency_s": 398, "semantic_success_pct": 65.0 },
+    "two":     { "events": 1080, "processed": 1080, "throughput_per_min": 15, "elapsed_wall_clock_s": 4320, "avg_latency_s": 798, "semantic_success_pct": 70.7 },
+    "three":   { "events": 1440, "processed": 1440, "throughput_per_min": 18, "elapsed_wall_clock_s": 4800, "avg_latency_s": 951, "semantic_success_pct": 82.0 }
   }
 }
 ```
@@ -132,3 +140,19 @@ required to reproduce the feasibility numbers above:
   against AgentSight on the same workload.
 
 Contributions and pull requests against these scripts are welcome.
+
+## Recent revisions addressing reviewer feedback
+
+- `eval-noise-ratio-constant`: `data/generate_synthetic_telemetry.py` now uses
+  a constant 25% noise ratio for all scenarios, configurable with
+  `--noise-ratio`.
+- `eval-event-count-fix`: this guide now documents the generator's actual
+  default output of 3,240 events, including per-scenario counts and the exact
+  reproduction command.
+- `repro-add-pymongo-requirement`: `data/requirements.txt` now includes
+  `pymongo>=4.0` for measurement-mode MongoDB reads.
+- `repro-kafka-port-docs`: n8n-in-docker instructions now use `kafka:29092`;
+  host-side commands continue to use `localhost:9092`.
+- `repro-measurement-timeout`: `scripts/publish_to_kafka.py` now applies
+  per-scenario timeouts and computes throughput from processed events divided
+  by elapsed wall-clock time, keeping latency separate.

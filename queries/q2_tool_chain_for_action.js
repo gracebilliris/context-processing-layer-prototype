@@ -9,9 +9,18 @@ print("Tool chain and raw evidence for student_profile accesses:");
 printjson(
   db.enriched_telemetry_raw.aggregate([
     { $match: { accessed_data: "student_profile", parseError: { $ne: true } } },
+    { $addFields: {
+        evidence_lookup_id: {
+          $replaceOne: {
+            input: "$prov:wasDerivedFrom",
+            find: "urn:cpl:evidence:",
+            replacement: ""
+          }
+        }
+    } },
     { $lookup: {
         from: "telemetry_raw",
-        localField: "prov_wasDerivedFrom",
+        localField: "evidence_lookup_id",
         foreignField: "evidence_id",
         as: "evidence"
     } },
@@ -22,7 +31,7 @@ printjson(
         delegated_to: "$target_agent",
         ts: "$timestamp",
         evidence_id: "$evidence_id",
-        prov_wasDerivedFrom: "$prov_wasDerivedFrom",
+        "prov:wasDerivedFrom": "$prov:wasDerivedFrom",
         evidence_resolved: { $gt: [ { $size: "$evidence" }, 0 ] },
         evidence_payload: { $arrayElemAt: [ "$evidence", 0 ] }
     } },

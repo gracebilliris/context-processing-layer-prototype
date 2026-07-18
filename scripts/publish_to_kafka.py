@@ -77,6 +77,13 @@ def _scenario(ev: dict) -> str:
 
 
 def _build_report(events: list[dict], ingested_at: dict[str, float], mongo_uri: str, mongo_db: str, timeout: int) -> dict:
+    """Build per-scenario metrics from MongoDB materialisation results.
+
+    Each scenario receives its own timeout budget. Throughput is intentionally
+    computed from processed events divided by elapsed wall-clock time only;
+    end-to-end event latency is reported separately and is not added to the
+    elapsed duration.
+    """
     try:
         from pymongo import MongoClient
     except ImportError:
@@ -93,12 +100,20 @@ def _build_report(events: list[dict], ingested_at: dict[str, float], mongo_uri: 
         by_scenario[_scenario(ev)].append(ev)
 
     scenarios_report: dict[str, dict] = {}
-    deadline = time.time() + timeout
     for sc, evs in by_scenario.items():
         expected = {_evidence_id(e) for e in evs}
+        deadline = time.time() + timeout
+        done_ids: set[str] = set()
+        rejected_ids: set[str] = set()
         while time.time() < deadline:
-            done_ids = {d.get("evidence_id") for d in enriched.find({"evidence_id": {"$in": list(expected)}}, {"evidence_id": 1})}
-            rejected_ids = {d.get("evidence_id") for d in raw.find({"evidence_id": {"$in": list(expected)}, "parseError": True}, {"evidence_id": 1})}
+            done_ids = {
+                d.get("evidence_id")
+                for d in enriched.find({"evidence_id": {"$in": list(expected)}}, {"evidence_id": 1})
+            } & expected
+            rejected_ids = {
+                d.get("evidence_id")
+                for d in raw.find({"evidence_id": {"$in": list(expected)}, "parseError": True}, {"evidence_id": 1})
+            } & expected
             if expected.issubset(done_ids | rejected_ids):
                 break
             time.sleep(2)
@@ -114,13 +129,18 @@ def _build_report(events: list[dict], ingested_at: dict[str, float], mongo_uri: 
                 except Exception:
                     continue
         total = len(evs)
+        processed = len((done_ids | rejected_ids) & expected)
         materialised = len(done_ids - rejected_ids)
-        elapsed_min = ((max(latencies) if latencies else 0) + (time.time() - min(ingested_at[_evidence_id(e)] for e in evs))) / 60 or 1
+        scenario_start = min(ingested_at[_evidence_id(e)] for e in evs)
+        elapsed_wall_clock_s = max(time.time() - scenario_start, 0.001)
+        elapsed_min = elapsed_wall_clock_s / 60
         scenarios_report[sc] = {
             "events": total,
+            "processed": processed,
             "materialised": materialised,
             "rejected": len(rejected_ids),
-            "throughput_per_min": round(total / elapsed_min, 1) if elapsed_min else None,
+            "throughput_per_min": round(processed / elapsed_min, 1) if elapsed_min else None,
+            "elapsed_wall_clock_s": round(elapsed_wall_clock_s, 1),
             "avg_latency_s": round(statistics.mean(latencies), 1) if latencies else None,
             "semantic_success_pct": round(100.0 * materialised / total, 1) if total else None,
         }
