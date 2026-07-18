@@ -7,6 +7,7 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok,srvr,stat"
     healthcheck:
       test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
       interval: 5s
@@ -53,11 +54,11 @@ services:
 
   fuseki:
     image: stain/jena-fuseki:latest
-    command: ["--tdb2", "--loc", "/fuseki/databases/cpl", "/cpl"]
     ports:
       - "${FUSEKI_HOST_PORT:-3030}:3030"
     environment:
       ADMIN_PASSWORD: ${FUSEKI_ADMIN_PASSWORD:-cpl}
+      FUSEKI_DATASET_1: cpl
     volumes:
       - fuseki-data:/fuseki
 
